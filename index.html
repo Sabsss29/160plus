@@ -145,7 +145,417 @@ async function loadDuelMessages(){if(!activeDuelId)return;const {data,error}=awa
 async function sendOnlineMessage(){if(!requireDuelSetup()||!activeDuelId)return;const input=document.getElementById('onlineText'),content=input.value.trim();if(!content)return;const {data,error}=await supabaseClient.rpc('send_duel_message',{p_duel_id:activeDuelId,p_content:content});if(error){toast(error.message);return;}if(!data){toast('ახლა შენი სვლა არ არის ან დრო ამოიწურა.');await loadActiveDuel();return;}input.value='';await loadDuelMessages();}
 async function tickDuel(){if(!activeDuel||activeDuel.status!=='active'||!activeDuel.turn_started_at)return;const end=new Date(activeDuel.turn_started_at).getTime()+30000,remaining=Math.max(0,Math.ceil((end-Date.now())/1000));document.getElementById('duelTimer').textContent='სვლის დარჩენილი დრო: '+remaining+' წმ.';if(remaining===0&&Date.now()-lastTurnAdvanceAt>2500){lastTurnAdvanceAt=Date.now();const {error}=await supabaseClient.rpc('advance_duel_turn',{p_duel_id:activeDuelId});if(error)console.warn(error);await loadActiveDuel();}}
 async function endOnlineDuel(){if(!requireDuelSetup()||!activeDuelId)return;if(!confirm('დარწმუნებული ხარ? დუელი და მისი შეტყობინებები წაიშლება.'))return;const {data,error}=await supabaseClient.rpc('end_duel',{p_duel_id:activeDuelId});if(error){toast('დასრულების შეცდომა: '+error.message);return;}if(!data){toast('მხოლოდ დუელის მონაწილეს შეუძლია დასრულება.');return;}if(duelChannel)await supabaseClient.removeChannel(duelChannel);if(duelTimerInterval)clearInterval(duelTimerInterval);duelChannel=null;duelTimerInterval=null;activeDuelId=null;activeDuel=null;document.getElementById('activeDuel').classList.add('hidden');toast('დუელი დასრულდა.');await refreshWaitingDuels();}
+/* ==========================================
+   160+ — SOCIAL FEATURES PATCH
+   შეინარჩუნებს არსებულ დიზაინსა და Duel-ს
+========================================== */
 
+(() => {
+  const $ = id => document.getElementById(id);
+
+  // 1. სწორი ავტორიზაციის ღილაკები
+  const navButtons = [...document.querySelectorAll('header .navbutton')];
+  const postButton = navButtons[0];
+  const authButton = navButtons[1];
+  const profileButton = navButtons[2];
+
+  function updateAccountButtons() {
+    if (authButton) {
+      authButton.textContent = currentUser
+        ? 'ანგარიშიდან გასვლა'
+        : 'შესვლა / რეგისტრაცია';
+
+      authButton.onclick = async () => {
+        if (!currentUser) {
+          openAuth();
+          return;
+        }
+
+        if (!confirm('ნამდვილად გინდა ანგარიშიდან გასვლა?')) return;
+
+        if (initSupabase()) {
+          const { error } = await supabaseClient.auth.signOut();
+
+          if (error) {
+            toast('გასვლის შეცდომა: ' + error.message);
+            return;
+          }
+        }
+
+        currentUser = null;
+        updateAccountButtons();
+        toast('ანგარიშიდან გამოხვედი.');
+      };
+    }
+
+    if (profileButton) {
+      profileButton.textContent = '👤 ჩემი პროფილი';
+      profileButton.onclick = openProfile;
+    }
+
+    if (postButton) postButton.onclick = openPost;
+  }
+
+  // 2. ავტორიზაციის ფანჯარა წარმატებული შესვლის შემდეგ
+  if (initSupabase()) {
+    supabaseClient.auth.onAuthStateChange((event, session) => {
+      currentUser = session?.user || null;
+      updateAccountButtons();
+
+      if (event === 'SIGNED_IN') {
+        closeAuth();
+        toast('ანგარიშში წარმატებით შეხვედი!');
+      }
+    });
+  }
+
+  // არსებული ავტორიზაციის ფუნქციის განახლება
+  updateDuelAuth = updateAccountButtons;
+
+  // 3. პროფილი მხოლოდ შესული მომხმარებლისთვის
+  openProfile = function () {
+    if (!currentUser) {
+      openAuth();
+      toast('პროფილის სანახავად ჯერ შედი ანგარიშში.');
+      return;
+    }
+
+    $('profileName').value = getDisplayName();
+    $('profileOverlay').classList.remove('hidden');
+  };
+
+  // 4. პოსტის ავტორის ავტომატურად შევსება
+  const originalOpenPost = openPost;
+
+  openPost = function () {
+    if (!currentUser) {
+      openAuth();
+      toast('პოსტის დასადებად ჯერ შედი ანგარიშში.');
+      return;
+    }
+
+    $('author').value =
+      getDisplayName() ||
+      currentUser.email?.split('@')[0] ||
+      '';
+
+    originalOpenPost();
+  };
+
+  // 5. ცალკე პოსტის ფანჯარა და დამოუკიდებელი კომენტარების სქროლი
+  const detailStyle = document.createElement('style');
+
+  detailStyle.textContent = `
+    #postDetailOverlay {
+      position:fixed; inset:0; z-index:35;
+      background:#05090ddd; display:flex;
+      align-items:center; justify-content:center;
+      padding:16px;
+    }
+    #postDetailOverlay.hidden { display:none!important; }
+    .post-detail {
+      width:min(1100px,100%); height:min(800px,92vh);
+      display:grid; grid-template-columns:minmax(0,1fr) minmax(280px,360px);
+      overflow:hidden; background:#17212b;
+      border:1px solid #3a4652; border-radius:16px;
+    }
+    .detail-content,.detail-comments {
+      min-width:0; min-height:0; overflow-y:auto; padding:18px;
+    }
+    .detail-comments { border-left:1px solid #303b47; display:flex; flex-direction:column; }
+    .detail-media img,.detail-media video {
+      display:block;width:100%;max-height:430px;
+      object-fit:contain;background:#0d141b;border-radius:10px;
+    }
+    .detail-comments .comment-list { overflow:visible; }
+    .detail-comments .comment-compose { margin-top:auto; padding-top:12px; }
+    .post { cursor:pointer; }
+    .post button,.post input,.post video { cursor:auto; }
+    .post .post-tools button { cursor:pointer; }
+    .detail-close {
+      float:right;background:#293540;color:white;
+      border:0;border-radius:8px;font-size:22px;
+      width:35px;height:35px;cursor:pointer;
+    }
+    @media(max-width:650px) {
+      #postDetailOverlay {padding:5px}
+      .post-detail {height:96vh;grid-template-columns:1fr;grid-template-rows:minmax(0,1fr) minmax(0,1fr)}
+      .detail-comments {border-left:0;border-top:1px solid #303b47}
+      .detail-content,.detail-comments {padding:12px}
+      .detail-media img,.detail-media video {max-height:220px}
+    }
+  `;
+
+  document.head.appendChild(detailStyle);
+
+  const detailOverlay = document.createElement('div');
+  detailOverlay.id = 'postDetailOverlay';
+  detailOverlay.className = 'hidden';
+
+  detailOverlay.innerHTML = `
+    <div class="post-detail">
+      <section class="detail-content" id="detailContent"></section>
+      <section class="detail-comments">
+        <div class="modal-head">
+          <h3>💬 კომენტარები</h3>
+          <button class="close" id="detailClose">×</button>
+        </div>
+        <p class="muted" id="detailCommentCount"></p>
+        <div class="comment-list" id="detailCommentList"></div>
+        <div class="comment-compose">
+          <input id="detailCommentInput" maxlength="500"
+                 placeholder="დაწერე კომენტარი...">
+          <button class="tiny" id="detailCommentSend">გაგზავნა</button>
+        </div>
+      </section>
+    </div>
+  `;
+
+  document.body.appendChild(detailOverlay);
+
+  let viewedPostId = null;
+
+  function findPost(id) {
+    return allPosts().find(p => String(p.id) === String(id));
+  }
+
+  function openPostView(id) {
+    const p = findPost(id);
+
+    if (!p) {
+      toast('პოსტი ვერ მოიძებნა.');
+      return;
+    }
+
+    viewedPostId = id;
+
+    const media = p.media
+      ? p.kind === 'video'
+        ? `<video src="${esc(p.media)}" controls></video>`
+        : `<img src="${esc(p.media)}" alt="${esc(p.title)}">`
+      : '<div class="post-placeholder">160+</div>';
+
+    $('detailContent').innerHTML = `
+      <button class="detail-close" onclick="closePostView()">×</button>
+      <span class="tag">${esc(labels[p.category] || 'პოსტი')}</span>
+      <h2>${esc(p.title)}</h2>
+      <p class="muted">ავტორი: ${esc(p.author || 'ანონიმი')}</p>
+      <div class="detail-media">${media}</div>
+      <p style="white-space:pre-wrap;overflow-wrap:anywhere;line-height:1.7">
+        ${esc(p.body || '')}
+      </p>
+      <div class="post-tools">
+        <button class="tiny" onclick="likePost('${esc(p.id)}')">♡ მოწონება</button>
+        <button class="tiny" onclick="sharePost('${esc(p.id)}')">↗ გაზიარება</button>
+      </div>
+    `;
+
+    renderDetailComments();
+    detailOverlay.classList.remove('hidden');
+    document.body.style.overflow = 'hidden';
+  }
+
+  function renderDetailComments() {
+    const p = findPost(viewedPostId);
+    if (!p) return;
+
+    const comments = Array.isArray(p.commentList) ? p.commentList : [];
+
+    $('detailCommentCount').textContent =
+      `სულ ${comments.length} კომენტარი`;
+
+    $('detailCommentList').innerHTML = comments.map(c => `
+      <div class="comment-item">
+        <b>${esc(c.author || 'მომხმარებელი')}</b>
+        ${esc(c.text || '')}
+      </div>
+    `).join('') || '<p class="muted">ჯერ კომენტარი არ არის.</p>';
+  }
+
+  window.openPostView = openPostView;
+
+  window.closePostView = function () {
+    detailOverlay.classList.add('hidden');
+    document.body.style.overflow = '';
+    viewedPostId = null;
+  };
+
+  $('detailClose').onclick = closePostView;
+
+  detailOverlay.addEventListener('click', e => {
+    if (e.target === detailOverlay) closePostView();
+  });
+
+  $('detailCommentSend').onclick = () => {
+    if (!viewedPostId) return;
+
+    if (!currentUser) {
+      openAuth();
+      toast('კომენტარის დასაწერად შედი ანგარიშში.');
+      return;
+    }
+
+    const input = $('detailCommentInput');
+    const text = input.value.trim();
+
+    if (!text) return;
+
+    const posts = readUserPosts();
+    const p = posts.find(x => String(x.id) === String(viewedPostId));
+
+    if (!p) {
+      toast('კომენტარის შენახვა ვერ მოხერხდა.');
+      return;
+    }
+
+    if (!Array.isArray(p.commentList)) p.commentList = [];
+
+    p.commentList.push({
+      author: getDisplayName() ||
+        currentUser.email?.split('@')[0] ||
+        'მომხმარებელი',
+      text,
+      created: Date.now()
+    });
+
+    saveUserPosts(posts);
+    input.value = '';
+
+    renderDetailComments();
+    renderPosts();
+  };
+
+  $('detailCommentInput').addEventListener('keydown', e => {
+    if (e.key === 'Enter') {
+      e.preventDefault();
+      $('detailCommentSend').click();
+    }
+  });
+
+  // 6. Feed-ზე მხოლოდ ბოლო კომენტარი გამოჩნდეს
+  const originalRenderPosts = renderPosts;
+
+  renderPosts = function () {
+    originalRenderPosts();
+
+    document.querySelectorAll('#postGrid .post').forEach(card => {
+      const commentList = card.querySelector('.comment-list');
+      const commentItems = commentList?.querySelectorAll('.comment-item');
+
+      if (!commentList || !commentItems?.length) return;
+
+      commentItems.forEach((item, index) => {
+        if (index !== commentItems.length - 1) item.remove();
+      });
+
+      let button = card.querySelector('.show-all-comments');
+
+      if (!button) {
+        button = document.createElement('button');
+        button.className = 'tiny show-all-comments';
+        button.textContent = 'ყველა კომენტარის ნახვა';
+        commentList.after(button);
+      }
+
+      button.onclick = e => {
+        e.stopPropagation();
+        const id = card.querySelector('.comment-compose input')
+          ?.id.replace('comment-', '');
+
+        if (id) openPostView(id);
+      };
+    });
+
+    // პოსტის გახსნა ბარათზე დაჭერით
+    document.querySelectorAll('#postGrid .post').forEach(card => {
+      card.onclick = e => {
+        if (e.target.closest('button,input,video')) return;
+
+        const input = card.querySelector('.comment-compose input');
+        const id = input?.id.replace('comment-', '');
+
+        if (id) openPostView(id);
+      };
+    });
+  };
+
+  // 7. თითო მომხმარებელზე ერთი მოწონება თითო პოსტზე
+  likePost = function (id) {
+    if (!currentUser) {
+      openAuth();
+      toast('მოსაწონებლად ჯერ შედი ანგარიშში.');
+      return;
+    }
+
+    const key = '160plus_liked_posts_' + currentUser.id;
+    let liked = [];
+
+    try {
+      liked = JSON.parse(localStorage.getItem(key) || '[]');
+    } catch {}
+
+    if (liked.includes(String(id))) {
+      toast('ეს პოსტი უკვე მოწონებული გაქვს.');
+      return;
+    }
+
+    const posts = readUserPosts();
+    const p = posts.find(x => String(x.id) === String(id));
+
+    if (!p) {
+      toast('ამ პოსტზე მოწონება ვერ მოიძებნა.');
+      return;
+    }
+
+    p.likes = (p.likes || 0) + 1;
+    liked.push(String(id));
+
+    localStorage.setItem(key, JSON.stringify(liked));
+    saveUserPosts(posts);
+    renderPosts();
+
+    if (viewedPostId) renderDetailComments();
+
+    toast('პოსტი მოგეწონა!');
+  };
+
+  // 8. კომენტარის Enter-ით გაგზავნა
+  const oldAddComment = addComment;
+
+  addComment = function (id) {
+    if (!currentUser) {
+      openAuth();
+      toast('კომენტარის დასაწერად ჯერ შედი ანგარიშში.');
+      return;
+    }
+
+    oldAddComment(id);
+  };
+
+  // 9. პროფილის შენახვა და დუელის ნიკის განახლება
+  $('profileForm').addEventListener('submit', () => {
+    setTimeout(() => {
+      const name = getDisplayName();
+      const nick = $('duelNick');
+
+      if (nick) nick.value = name;
+      localStorage.setItem('160plus_duel_nick', name);
+    }, 0);
+  });
+
+  // 10. Escape-ით მოდალების დახურვა
+  document.addEventListener('keydown', e => {
+    if (e.key !== 'Escape') return;
+
+    closePostView();
+
+    ['authOverlay', 'postOverlay', 'profileOverlay'].forEach(id => {
+      $(id)?.classList.add('hidden');
+    });
+  });
+
+  updateAccountButtons();
+})();
 renderPosts();
 </script>
 </body>
