@@ -59,70 +59,115 @@ footer{margin:25px -24px 0;background:#101720;border-top:1px solid #2a3540;paddi
 <div class="field"><label for="title">სათაური</label><input id="title" maxlength="100" required placeholder="პოსტის სათაური"></div>
 <div class="field"><label for="author">ავტორი</label><input id="author" maxlength="40" placeholder="ნიკი (არასავალდებულო)"></div>
 <div class="field"><label for="body">ტექსტი</label><textarea id="body" maxlength="3000" placeholder="დაწერე პოსტის ტექსტი..."></textarea></div>
-<div class="field"><label for="media">ფოტოს ან ვიდეოს ატვირთვა მოწყობილობიდან</label><input id="media" type="file" accept="image/*,video/*" multiple><div class="note">შეგიძლია კომპიუტერიდან ან ტელეფონიდან აირჩიო ფოტო/ვიდეო. დემო ვერსიაში ფაილები ამ ბრაუზერის მეხსიერებაში ინახება; დიდი ვიდეოებისთვის საჭიროა სერვერზე ატვირთვა.</div><div class="preview" id="preview"></div></div>
+<div class="field"><label for="media">ფოტოს ან ვიდეოს ატვირთვა მოწყობილობიდან</label><input id="media" type="file" accept="image/*,video/*" multiple><div class="note">აირჩიე ერთი ფოტო ან ვიდეო. ფაილი აიტვირთება Supabase Storage-ში; საჭიროა Storage-ის ატვირთვის პოლიტიკის ჩართვა.</div><div class="preview" id="preview"></div></div>
 <button type="submit" class="primary" style="width:100%">პოსტის გამოქვეყნება</button></form></div><div id="toast" class="toast hidden"></div>
 <script>
 
-// Supabase configuration: fill these two values from Project Settings > API.
-const SUPABASE_URL = 'PASTE_YOUR_SUPABASE_PROJECT_URL_HERE';
-const SUPABASE_ANON_KEY = 'PASTE_YOUR_SUPABASE_ANON_KEY_HERE';
+// Supabase setup
+const SUPABASE_URL = 'https://pfikdcuuuzjceqhtvmoc.supabase.co';
+const SUPABASE_ANON_KEY = 'sb_publishable_KS6JHIg9dF7N3fnFKmpdTg_i0saOW2v';
 let supabaseClient = null;
 let authMode = 'login';
+let currentUser = null;
+let currentFilter = 'all';
+let mediaFiles = [];
+const labels = {facts:'საინტერესო ფაქტები',memes:'მიმები',mindblow:'Mind Blow',photos:'ფოტოები'};
 function initSupabase(){
-  if(!window.supabase || SUPABASE_URL.includes('PASTE_') || SUPABASE_ANON_KEY.includes('PASTE_')) return false;
-  supabaseClient = window.supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
+  if(!window.supabase) return false;
+  if(!supabaseClient) supabaseClient = window.supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
   return true;
 }
-function openAuth(){authMode='login';document.getElementById('authHeading').textContent='შესვლა';document.getElementById('authSubmit').textContent='შესვლა';document.getElementById('authToggle').textContent='ანგარიშის შექმნა';document.getElementById('forgotPassword').classList.remove('hidden');document.getElementById('authOverlay').classList.remove('hidden');}
-function closeAuth(){document.getElementById('authOverlay').classList.add('hidden');}
-function toggleAuthMode(){
-  authMode = authMode === 'login' ? 'signup' : 'login';
-  document.getElementById('authHeading').textContent = authMode === 'login' ? 'შესვლა' : 'ანგარიშის შექმნა';
-  document.getElementById('authSubmit').textContent = authMode === 'login' ? 'შესვლა' : 'რეგისტრაცია';
-  document.getElementById('authToggle').textContent = authMode === 'login' ? 'ანგარიშის შექმნა' : 'უკვე გაქვს ანგარიში? შესვლა';
-  document.getElementById('forgotPassword').classList.toggle('hidden', authMode !== 'login');
-}
-async function resetPassword(){
-  if(!initSupabase()){document.getElementById('authMessage').textContent='ჯერ README-ში მოცემული Supabase URL და anon key უნდა ჩასვა.';return;}
-  const email=document.getElementById('authEmail').value.trim();
-  if(!email){document.getElementById('authMessage').textContent='ჯერ ელფოსტა ჩაწერე.';return;}
-  const {error}=await supabaseClient.auth.resetPasswordForEmail(email);
-  document.getElementById('authMessage').textContent=error?error.message:'თუ ამ ელფოსტაზე ანგარიში არსებობს, პაროლის აღდგენის ბმული გაიგზავნება.';
-}
-document.addEventListener('DOMContentLoaded',()=>{
-  const form=document.getElementById('authForm');
-  if(form) form.addEventListener('submit',async e=>{
-    e.preventDefault();
-    if(!initSupabase()){document.getElementById('authMessage').textContent='ავტორიზაცია ჯერ არ არის დაკავშირებული. შეავსე Supabase URL და anon key README-ის მიხედვით.';return;}
-    const email=document.getElementById('authEmail').value.trim(), password=document.getElementById('authPassword').value;
-    const result = authMode==='signup'
-      ? await supabaseClient.auth.signUp({email,password})
-      : await supabaseClient.auth.signInWithPassword({email,password});
-    document.getElementById('authMessage').textContent=result.error?result.error.message:(authMode==='signup'?'ანგარიშის შექმნის მოთხოვნა გაიგზავნა. თუ ელფოსტის დადასტურება ჩართულია, შეამოწმე ფოსტა.':'შესვლა წარმატებულია. მონაცემთა ბაზასთან პოსტების დაკავშირება შემდეგი ნაბიჯია.');
-  });
-});
-const KEY='160plus_local_posts_v3';let currentFilter='all',mediaFiles=[];
-const demo=[];
-const labels={facts:'საინტერესო ფაქტები',memes:'მიმები',mindblow:'Mind Blow',photos:'ფოტოები'};
 function esc(s=''){return String(s).replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]))}
-function readUserPosts(){try{return JSON.parse(localStorage.getItem(KEY)||'[]')}catch(e){return []}}
-function saveUserPosts(p){localStorage.setItem(KEY,JSON.stringify(p))}
-function allPosts(){return readUserPosts().sort((a,b)=>b.created-a.created)}
-function renderPosts(){let posts=allPosts();if(currentFilter!=='all')posts=posts.filter(p=>p.category===currentFilter);document.getElementById('feedTitle').textContent=currentFilter==='all'?'უახლესი პოსტები':labels[currentFilter];document.getElementById('postGrid').innerHTML=posts.map(p=>`<article class="post"><div class="post-media">${p.media?(p.kind==='video'?`<video src="${p.media}" controls></video>`:`<img src="${esc(p.media)}" alt="${esc(p.title)}" loading="lazy">`):`<span class="post-placeholder">160+</span>`}</div><div class="post-body"><span class="tag">${labels[p.category]||'პოსტი'}</span><h3>${esc(p.title)}</h3><p>${esc(p.body||'')}</p><div class="post-meta"><span>◉ ${p.likes||0}　♡ ${p.comments||0}</span><span>${esc(p.author||'ანონიმი')}</span></div><div class="post-tools"><button class="tiny" onclick="likePost('${p.id}')">♡ მოწონება</button><button class="tiny" onclick="sharePost('${p.id}')">↗ გაზიარება</button></div></div></article>`).join('')||'<p class="muted">ამ კატეგორიაში ჯერ პოსტები არ არის.</p>'}
+function toast(s){const t=document.getElementById('toast');t.textContent=s;t.classList.remove('hidden');setTimeout(()=>t.classList.add('hidden'),3200)}
+function openAuth(){authMode='login';updateAuthMode();document.getElementById('authMessage').textContent='';document.getElementById('authOverlay').classList.remove('hidden')}
+function closeAuth(){document.getElementById('authOverlay').classList.add('hidden')}
+function updateAuthMode(){
+ document.getElementById('authHeading').textContent=authMode==='login'?'შესვლა':'ანგარიშის შექმნა';
+ document.getElementById('authSubmit').textContent=authMode==='login'?'შესვლა':'რეგისტრაცია';
+ document.getElementById('authToggle').textContent=authMode==='login'?'ანგარიშის შექმნა':'უკვე გაქვს ანგარიში? შესვლა';
+ document.getElementById('forgotPassword').classList.toggle('hidden',authMode!=='login');
+}
+function toggleAuthMode(){authMode=authMode==='login'?'signup':'login';updateAuthMode()}
+async function resetPassword(){
+ if(!initSupabase()){toast('Supabase ვერ ჩაიტვირთა. განაახლე გვერდი.');return}
+ const email=document.getElementById('authEmail').value.trim();
+ if(!email){document.getElementById('authMessage').textContent='ჯერ ელფოსტა ჩაწერე.';return}
+ const {error}=await supabaseClient.auth.resetPasswordForEmail(email,{redirectTo:location.origin+location.pathname});
+ document.getElementById('authMessage').textContent=error?error.message:'თუ ამ ელფოსტაზე ანგარიში არსებობს, აღდგენის ბმული გაიგზავნება.';
+}
+async function updateAuthUI(){
+ if(!initSupabase())return;
+ const {data:{session}}=await supabaseClient.auth.getSession(); currentUser=session?.user||null;
+ const buttons=document.querySelectorAll('.navbutton');
+ if(buttons.length>1)buttons[1].textContent=currentUser?'გასვლა':'შესვლა / რეგისტრაცია';
+}
+document.getElementById('authForm').addEventListener('submit',async e=>{
+ e.preventDefault(); if(!initSupabase()){document.getElementById('authMessage').textContent='Supabase ვერ ჩაიტვირთა. სცადე გვერდის განახლება.';return}
+ const email=document.getElementById('authEmail').value.trim(),password=document.getElementById('authPassword').value;
+ const btn=document.getElementById('authSubmit');btn.disabled=true;
+ try{
+  const result=authMode==='signup'?await supabaseClient.auth.signUp({email,password,options:{emailRedirectTo:location.origin+location.pathname}}):await supabaseClient.auth.signInWithPassword({email,password});
+  if(result.error)document.getElementById('authMessage').textContent=result.error.message;
+  else if(authMode==='signup'&&!result.data.session)document.getElementById('authMessage').textContent='ანგარიში შეიქმნა. შეამოწმე ელფოსტა დადასტურებისთვის.';
+  else {document.getElementById('authMessage').textContent='წარმატებით შეხვედი!';await updateAuthUI();await loadPosts();setTimeout(closeAuth,700)}
+ }catch(err){document.getElementById('authMessage').textContent=err.message||'შეცდომა მოხდა.'}finally{btn.disabled=false}
+});
+const demo=[];
+async function loadPosts(){
+ const grid=document.getElementById('postGrid');
+ if(!initSupabase()){grid.innerHTML='<p class="muted">პოსტები ვერ ჩაიტვირთა.</p>';return}
+ grid.innerHTML='<p class="muted">იტვირთება...</p>';
+ let q=supabaseClient.from('posts').select('*').order('created_at',{ascending:false});
+ if(currentFilter!=='all')q=q.eq('category',currentFilter);
+ const {data,error}=await q;
+ if(error){grid.innerHTML='<p class="muted">პოსტების ჩატვირთვა ვერ მოხერხდა: '+esc(error.message)+'</p>';return}
+ document.getElementById('feedTitle').textContent=currentFilter==='all'?'უახლესი პოსტები':labels[currentFilter];
+ grid.innerHTML=(data||[]).map(p=>{
+  const media=p.image_url||'';const isVideo=/\.(mp4|webm|ogg)(\?|$)/i.test(media);
+  return `<article class="post"><div class="post-media">${media?(isVideo?`<video src="${esc(media)}" controls></video>`:`<img src="${esc(media)}" alt="${esc(p.title)}" loading="lazy">`):'<span class="post-placeholder">160+</span>'}</div><div class="post-body"><span class="tag">${esc(labels[p.category]||'პოსტი')}</span><h3>${esc(p.title)}</h3><p>${esc(p.content||'')}</p><div class="post-meta"><span>160+</span><span>${esc(p.username||'მომხმარებელი')}</span></div><div class="post-tools"><button class="tiny" onclick="sharePost('${esc(p.id)}')">↗ გაზიარება</button></div></div></article>`
+ }).join('')||'<p class="muted">ამ კატეგორიაში ჯერ პოსტები არ არის.</p>';
+}
+function renderPosts(){loadPosts()}
 function filterPosts(cat){currentFilter=cat;renderPosts();document.getElementById('posts').scrollIntoView({behavior:'smooth'})}
 function goHome(){document.getElementById('home').scrollIntoView({behavior:'smooth'});document.getElementById('duel-live').style.display='none'}
-function openPost(){document.getElementById('postOverlay').classList.remove('hidden')}
+async function openPost(){
+ if(!initSupabase()){toast('საიტი ვერ დაუკავშირდა Supabase-ს.');return}
+ const {data:{session}}=await supabaseClient.auth.getSession();
+ if(!session){toast('პოსტის დასადებად ჯერ შედი ან დარეგისტრირდი.');openAuth();return}
+ currentUser=session.user;document.getElementById('postOverlay').classList.remove('hidden');
+}
 function closePost(){document.getElementById('postOverlay').classList.add('hidden');mediaFiles=[];document.getElementById('preview').innerHTML='';document.getElementById('postForm').reset()}
 document.getElementById('postOverlay').addEventListener('click',e=>{if(e.target.id==='postOverlay')closePost()});
 document.getElementById('media').addEventListener('change',e=>{mediaFiles=Array.from(e.target.files||[]);const box=document.getElementById('preview');box.innerHTML='';mediaFiles.forEach(file=>{const url=URL.createObjectURL(file);const el=document.createElement(file.type.startsWith('video/')?'video':'img');el.src=url;if(el.tagName==='VIDEO')el.controls=true;box.appendChild(el)})});
-document.getElementById('postForm').addEventListener('submit',async e=>{e.preventDefault();const title=document.getElementById('title').value.trim();if(!title){toast('სათაური აუცილებელია');return}try{const media=[];for(const f of mediaFiles){if(f.size>1.5*1024*1024){toast('ფაილის ზომა 1.5 MB-ს აჭარბებს.');return}media.push({data:await fileToDataURL(f),kind:f.type.startsWith('video/')?'video':'image'})}const p={id:'u'+Date.now(),category:document.getElementById('category').value,title,author:document.getElementById('author').value.trim()||'ანონიმი',body:document.getElementById('body').value.trim(),media:media[0]?.data||'',kind:media[0]?.kind||'image',created:Date.now(),likes:0,comments:0};const all=readUserPosts();all.push(p);saveUserPosts(all);closePost();currentFilter='all';renderPosts();toast('პოსტის გამოქვეყნებისთვის ჯერ ავტორიზაცია უნდა იყოს დაკავშირებული.')}catch(err){toast('ვერ შეინახა — შესაძლოა მეხსიერება სავსეა.')}})
-function fileToDataURL(file){return new Promise((resolve,reject)=>{const r=new FileReader();r.onload=()=>resolve(r.result);r.onerror=reject;r.readAsDataURL(file)})}
-function toast(s){const t=document.getElementById('toast');t.textContent=s;t.classList.remove('hidden');setTimeout(()=>t.classList.add('hidden'),2800)}
-function likePost(id){const posts=readUserPosts(),p=posts.find(x=>x.id===id);if(p){p.likes=(p.likes||0)+1;saveUserPosts(posts);renderPosts()}else toast('დემო პოსტების მოწონება ჯერ მხოლოდ ვიზუალურია.')}
-function sharePost(id){const p=allPosts().find(x=>x.id===id);if(!p)return;const text=p.title+'\n'+p.body;if(navigator.share)navigator.share({title:p.title,text}).catch(()=>{});else if(navigator.clipboard)navigator.clipboard.writeText(text).then(()=>toast('პოსტის ტექსტი დაკოპირდა!'));else toast(text)}
+document.getElementById('postForm').addEventListener('submit',async e=>{
+ e.preventDefault();if(!initSupabase()){toast('Supabase ვერ ჩაიტვირთა.');return}
+ const {data:{session}}=await supabaseClient.auth.getSession();if(!session){closePost();openAuth();toast('პოსტის დასადებად საჭიროა შესვლა.');return}
+ const title=document.getElementById('title').value.trim();if(!title){toast('სათაური აუცილებელია');return}
+ const submit=e.submitter; if(submit)submit.disabled=true;
+ try{
+  let imageUrl=null;
+  if(mediaFiles.length){const f=mediaFiles[0];const safeName=f.name.replace(/[^a-zA-Z0-9._-]/g,'_');const path=`${session.user.id}/${Date.now()}-${safeName}`;
+   const {error:uploadError}=await supabaseClient.storage.from('post-media').upload(path,f,{upsert:false,contentType:f.type});
+   if(uploadError)throw new Error('მედიის ატვირთვა ვერ მოხერხდა: '+uploadError.message);
+   const {data:publicData}=supabaseClient.storage.from('post-media').getPublicUrl(path);imageUrl=publicData.publicUrl;
+  }
+  const username=document.getElementById('author').value.trim()||session.user.email?.split('@')[0]||'მომხმარებელი';
+  const payload={user_id:session.user.id,username,title,content:document.getElementById('body').value.trim(),category:document.getElementById('category').value,image_url:imageUrl};
+  const {error}=await supabaseClient.from('posts').insert(payload);if(error)throw error;
+  closePost();currentFilter='all';await loadPosts();toast('პოსტი გამოქვეყნდა!');
+ }catch(err){toast(err.message||'პოსტის გამოქვეყნება ვერ მოხერხდა.')}finally{if(submit)submit.disabled=false}
+});
+async function sharePost(id){const {data,error}=await supabaseClient.from('posts').select('title,content').eq('id',id).single();if(error){toast('პოსტის გაზიარება ვერ მოხერხდა');return}const text=data.title+'\n'+data.content;if(navigator.share)navigator.share({title:data.title,text}).catch(()=>{});else if(navigator.clipboard)navigator.clipboard.writeText(text).then(()=>toast('პოსტის ტექსტი დაკოპირდა!'));else toast(text)}
 function showDuel(){document.getElementById('duel-live').style.display='block';document.getElementById('duel-live').scrollIntoView({behavior:'smooth'})}
-function sendMessage(who){const input=document.getElementById(who==='A'?'textA':'textB'),text=input.value.trim();if(!text)return;const target=document.getElementById(who==='A'?'messagesA':'messagesB');const bubble=document.createElement('div');bubble.className='bubble mine';bubble.textContent=text;target.appendChild(bubble);target.scrollTop=target.scrollHeight;input.value=''}
-renderPosts();
+function sendMessage(){toast('ონლაინ დუელი ჯერ დასამატებელია — ამჟამად მხოლოდ პოსტების სისტემა მუშაობს.')}
+async function logoutOrAuth(){if(!initSupabase())return;if(currentUser){await supabaseClient.auth.signOut();currentUser=null;await updateAuthUI();toast('გამოხვედი ანგარიშიდან')}else openAuth()}
+// Replace the second header button handler so it becomes sign-in/sign-out.
+const authNavButtons=document.querySelectorAll('.navbutton');if(authNavButtons.length>1)authNavButtons[1].onclick=logoutOrAuth;
+if(initSupabase()){
+ supabaseClient.auth.onAuthStateChange((_event,session)=>{currentUser=session?.user||null;updateAuthUI();});
+ updateAuthUI();
+}
+loadPosts();
 </script>
 </body>
 </html>
