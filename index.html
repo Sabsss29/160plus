@@ -557,6 +557,326 @@ async function endOnlineDuel(){if(!requireDuelSetup()||!activeDuelId)return;if(!
   updateAccountButtons();
 })();
 renderPosts();
+/* ===== 160+ SUPABASE SOCIAL BACKEND ===== */
+(() => {
+  const $ = id => document.getElementById(id);
+  const storage = () => supabaseClient.storage.from('posts');
+
+  let sharedPosts = [];
+  let loadingPosts = false;
+
+  const username = () =>
+    getDisplayName() ||
+    currentUser?.email?.split('@')[0] ||
+    'მომხმარებელი';
+
+  function notifyError(message, error) {
+    console.error(message, error);
+    toast(message + (error?.message ? ': ' + error.message : ''));
+  }
+
+  async function loadSharedPosts() {
+    if (!initSupabase() || loadingPosts) return;
+    loadingPosts = true;
+
+    try {
+      const [postResult, commentResult, likeResult] = await Promise.all([
+        supabaseClient.from('posts').select('*').order('created_at', { ascending: false }),
+        supabaseClient.from('post_comments').select('*').order('created_at', { ascending: true }),
+        supabaseClient.from('post_likes').select('post_id,user_id')
+      ]);
+
+      if (postResult.error) throw postResult.error;
+      if (commentResult.error) throw commentResult.error;
+      if (likeResult.error) throw likeResult.error;
+
+      const commentsByPost = {};
+      const likesByPost = {};
+
+      for (const c of commentResult.data || []) {
+        (commentsByPost[c.post_id] ||= []).push({
+          author: c.author_name || 'მომხმარებელი',
+          text: c.content || '',
+          created: Date.parse(c.created_at) || Date.now()
+        });
+      }
+
+      for (const like of likeResult.data || []) {
+        likesByPost[like.post_id] = (likesByPost[like.post_id] || 0) + 1;
+      }
+
+      sharedPosts = (postResult.data || []).map(p => ({
+        id: String(p.id),
+        category: p.category || 'facts',
+        title: p.title || '',
+        author: p.author_name || 'მომხმარებელი',
+        body: p.content || '',
+        media: p.image_url || '',
+        kind: p.media_kind || 'image',
+        created: Date.parse(p.created_at) || Date.now(),
+        likes: likesByPost[p.id] || 0,
+        commentList: commentsByPost[p.id] || [],
+        user_id: p.user_id
+      }));
+
+      // localStorage მხოლოდ ეკრანის დროებითი ქეშია;
+      // ძირითადი მონაცემები Supabase-დან იტვირთება.
+      saveUserPosts(sharedPosts);
+      renderPosts();
+    } catch (error) {
+      notifyError('პოსტების ჩატვირთვა ვერ მოხერხდა', error);
+    } finally {
+      loadingPosts = false;
+    }
+  }
+
+  // ძველი ფუნქციები ეკრანის ქეშიდან კითხულობს.
+  allPosts = () => [...sharedPosts].sort((a, b) => b.created - a.created);
+
+  // პოსტის გამოქვეყნება: ფაილი Storage-ში, ინფორმაცია ცხრილში.
+  const postForm = $('postForm');
+
+  postForm.addEventListener('submit', async e => {
+    e.preventDefault();
+    e.stopImmediatePropagation();
+
+    if (!initSupabase()) {
+      toast('Supabase კავშირი ვერ ჩაიტვირთა.');
+      return;
+    }
+
+    if (!currentUser) {
+      closePost();
+      openAuth();
+      toast('გამოსაქვეყნებლად შედი ანგარიშში.');
+      return;
+    }
+
+    const title = $('title').value.trim();
+    if (!title) {
+      toast('სათაური აუცილებელია.');
+      return;
+    }
+
+    const file = mediaFiles[0] || null;
+    let uploadedPath = null;
+
+    try {
+      const submitButton = postForm.querySelector('button[type="submit"]');
+      submitButton.disabled = true;
+      submitButton.textContent = 'იტვირთება...';
+
+      let publicUrl = null;
+      let mediaKind = 'image';
+
+      if (file) {
+        if (!file.type.startsWith('image/') && !file.type.startsWith('video/')) {
+          throw new Error('აირჩიე ფოტო ან ვიდეო.');
+        }
+
+        // ვიდეოებს დიდი ადგილი შეიძლება დასჭირდეს.
+        if (file.size > 100 * 1024 * 1024) {
+          throw new Error('ფაილი 100 MB-ზე დიდია.');
+        }
+
+        mediaKind = file.type.startsWith('video/') ? 'video' : 'image';
+
+        const safeName = file.name.replace(/[^a-zA-Z0-9._-]/g, '_');
+        uploadedPath = `${currentUser.id}/${crypto.randomUUID()}-${safeName}`;
+
+        const { error: uploadError } = await storage().upload(uploadedPath, file, {
+          upsert: false,
+          contentType: file.type
+        });
+
+        if (uploadError) throw uploadError;
+
+        publicUrl = storage().getPublicUrl(uploadedPath).data.publicUrl;
+      }
+
+      const postData = {
+        user_id: currentUser.id,
+        title,
+        category: $('category').value,
+        author_name: $('author').value.trim() || username(),
+        content: $('body').value.trim(),
+        image_url: publicUrl,
+        media_kind: mediaKind,
+        likes_count: 0
+      };
+
+      const { error: insertError } = await supabaseClient
+        .from('posts')
+        .insert(postData);
+
+     if (insertError) {
+  // ატვირთული ფაილი წავშალოთ, თუ პოსტის შენახვა ვერ მოხერხდა.
+  if (uploadedPath) {
+    await storage().remove([uploadedPath]);
+  }
+  throw insertError;
+}
+      closePost();
+      currentFilter = 'all';
+      await loadSharedPosts();
+      toast('პოსტი გამოქვეყნდა!');
+    } catch (error) {
+      notifyError('პოსტის გამოქვეყნება ვერ მოხერხდა', error);
+    } finally {
+      const button = postForm.querySelector('button[type="submit"]');
+      button.disabled = false;
+      button.textContent = 'პოსტის გამოქვეყნება';
+    }
+  }, true);
+
+  // საერთო მოწონებები. თითო მომხმარებელი თითო პოსტს ერთხელ იწონებს.
+  likePost = async function(id) {
+    if (!currentUser) {
+      openAuth();
+      toast('მოსაწონებლად შედი ანგარიშში.');
+      return;
+    }
+
+    const post = sharedPosts.find(p => String(p.id) === String(id));
+    if (!post) return;
+
+    try {
+      const { data: existing, error: readError } = await supabaseClient
+        .from('post_likes')
+        .select('post_id')
+        .eq('post_id', id)
+        .eq('user_id', currentUser.id)
+        .maybeSingle();
+
+      if (readError) throw readError;
+
+      if (existing) {
+        toast('ეს პოსტი უკვე მოწონებული გაქვს.');
+        return;
+      }
+
+      const { error } = await supabaseClient.from('post_likes').insert({
+        post_id: id,
+        user_id: currentUser.id
+      });
+
+      if (error) {
+        if (error.code === '23505') {
+          toast('ეს პოსტი უკვე მოწონებული გაქვს.');
+          return;
+        }
+        throw error;
+      }
+
+      await loadSharedPosts();
+      toast('პოსტი მოგეწონა!');
+    } catch (error) {
+      notifyError('მოწონება ვერ შეინახა', error);
+    }
+  };
+
+  // საერთო კომენტარები.
+  addComment = async function(id) {
+    if (!currentUser) {
+      openAuth();
+      toast('კომენტარის დასაწერად შედი ანგარიშში.');
+      return;
+    }
+
+    const input = $('comment-' + id);
+    const content = input?.value.trim();
+    if (!content) return;
+
+    try {
+      const { error } = await supabaseClient.from('post_comments').insert({
+        post_id: id,
+        user_id: currentUser.id,
+        author_name: username(),
+        content
+      });
+
+      if (error) throw error;
+
+      if (input) input.value = '';
+      await loadSharedPosts();
+      toast('კომენტარი დაემატა!');
+    } catch (error) {
+      notifyError('კომენტარი ვერ შეინახა', error);
+    }
+  };
+
+  // დეტალური პოსტის ფანჯრის კომენტარებიც Supabase-ში ინახება.
+  let activeDetailPostId = null;
+  const originalOpenPostView = window.openPostView;
+
+  window.openPostView = function(id) {
+    activeDetailPostId = String(id);
+    originalOpenPostView(id);
+  };
+
+  $('detailCommentSend').onclick = async () => {
+    if (!currentUser) {
+      openAuth();
+      toast('კომენტარის დასაწერად შედი ანგარიშში.');
+      return;
+    }
+
+    if (!activeDetailPostId) return;
+
+    const input = $('detailCommentInput');
+    const content = input.value.trim();
+    if (!content) return;
+
+    try {
+      const { error } = await supabaseClient.from('post_comments').insert({
+        post_id: activeDetailPostId,
+        user_id: currentUser.id,
+        author_name: username(),
+        content
+      });
+
+      if (error) throw error;
+
+      input.value = '';
+      await loadSharedPosts();
+
+      // განვაახლოთ ღია პოსტის კომენტარებიც.
+      window.openPostView(activeDetailPostId);
+    } catch (error) {
+      notifyError('კომენტარი ვერ შეინახა', error);
+    }
+  };
+
+  // ავტორიზაციის შემდეგ და სხვა მომხმარებლის ცვლილებებისას განახლება.
+  if (initSupabase()) {
+    supabaseClient.auth.onAuthStateChange(() => {
+      setTimeout(loadSharedPosts, 0);
+    });
+
+    supabaseClient
+      .channel('160plus-shared-feed')
+      .on('postgres_changes', {
+        event: '*',
+        schema: 'public',
+        table: 'posts'
+      }, loadSharedPosts)
+      .on('postgres_changes', {
+        event: '*',
+        schema: 'public',
+        table: 'post_comments'
+      }, loadSharedPosts)
+      .on('postgres_changes', {
+        event: '*',
+        schema: 'public',
+        table: 'post_likes'
+      }, loadSharedPosts)
+      .subscribe();
+  }
+
+  // გვერდის პირველივე გახსნისას საერთო პოსტების წამოღება.
+  loadSharedPosts();
+})();
+
 </script>
 </body>
 </html>
