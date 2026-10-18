@@ -695,15 +695,16 @@ renderPosts();
       }
 
       const postData = {
-        user_id: currentUser.id,
-        title,
-        category: $('category').value,
-        author_name: $('author').value.trim() || username(),
-        content: $('body').value.trim(),
-        image_url: publicUrl,
-        media_kind: mediaKind,
-        likes_count: 0
-      };
+  user_id: currentUser.id,
+  username: username() || $('author').value.trim() || 'მომხმარებელი',
+  title,
+  category: $('category').value,
+  author_name: $('author').value.trim() || username(),
+  content: $('body').value.trim(),
+  image_url: publicUrl,
+  media_kind: mediaKind,
+  likes_count: 0
+};
 
       const { error: insertError } = await supabaseClient
         .from('posts')
