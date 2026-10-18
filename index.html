@@ -116,7 +116,7 @@ function esc(s=''){return String(s).replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt
 function readUserPosts(){try{return JSON.parse(localStorage.getItem(KEY)||'[]')}catch(e){return []}}
 function saveUserPosts(p){localStorage.setItem(KEY,JSON.stringify(p))}
 function allPosts(){return readUserPosts().sort((a,b)=>b.created-a.created)}
-function renderPosts(){let posts=allPosts();if(currentFilter!=='all')posts=posts.filter(p=>p.category===currentFilter);document.getElementById('feedTitle').textContent=currentFilter==='all'?'უახლესი პოსტები':labels[currentFilter];document.getElementById('postGrid').innerHTML=posts.map(p=>{const comments=Array.isArray(p.commentList)?p.commentList:[];return `<article class="post"><div class="post-media">${p.media?(p.kind==='video'?`<video src="${p.media}" controls></video>`:`<img src="${esc(p.media)}" alt="${esc(p.title)}" loading="lazy">`):`<span class="post-placeholder">160+</span>`}</div><div class="post-body"><span class="tag">${labels[p.category]||'პოსტი'}</span><h3>${esc(p.title)}</h3><p>${esc(p.body||'')}</p><div class="post-meta"><span>◉ ${p.likes||0}　💬 ${comments.length}</span><span>${esc(p.author||'ანონიმი')}</span></div><div class="post-tools"><button class="tiny" onclick="likePost('${p.id}')">♡ მოწონება</button><button class="tiny" onclick="sharePost('${p.id}')">↗ გაზიარება</button></div><div class="comments-box"><b>💬 კომენტარები (${comments.length})</b><div class="comment-list">${comments.map(c=>`<div class="comment-item"><b>${esc(c.author)}</b>${esc(c.text)}</div>`).join('')||'<small class="muted">ჯერ კომენტარი არ არის.</small>'}</div><div class="comment-compose"><input id="comment-${p.id}" maxlength="500" placeholder="დაწერე კომენტარი..." onkeydown="if(event.key==='Enter'){event.preventDefault();addComment('${p.id}')}"><button class="tiny" onclick="addComment('${p.id}')">გაგზავნა</button></div></div></div></article>`}).join('')||'<p class="muted">ამ კატეგორიაში ჯერ პოსტები არ არის.</p>'}
+function renderPosts(){let posts=allPosts();if(currentFilter!=='all')posts=posts.filter(p=>p.category===currentFilter);document.getElementById('feedTitle').textContent=currentFilter==='all'?'უახლესი პოსტები':labels[currentFilter];document.getElementById('postGrid').innerHTML=posts.map(p=>{const comments=Array.isArray(p.commentList)?p.commentList:[];return `<article class="post"><div class="post-media">${p.media?(p.kind==='video'?`<video src="${p.media}" controls></video>`:`<img src="${esc(p.media)}" alt="${esc(p.title)}" loading="lazy">`):`<span class="post-placeholder">160+</span>`}</div><div class="post-body"><span class="tag">${labels[p.category]||'პოსტი'}</span><h3>${esc(p.title)}</h3><p>${esc(p.body||'')}</p><div class="post-meta"><span>◉ ${p.likes||0}　💬 ${comments.length}</span><span>${esc(p.author||'ანონიმი')}</span></div><div class="post-tools"><button class="tiny" onclick="likePost('${p.id}')">♡ მოწონება</button><button class="tiny" onclick="sharePost('${p.id}')">↗ გაზიარება</button>${currentUser && p.user_id === currentUser.id ? `<button class="tiny delete-post-btn" onclick="event.stopPropagation();deletePost('${p.id}')">🗑 წაშლა</button>` : ''}</div><div class="comments-box"><b>💬 კომენტარები (${comments.length})</b><div class="comment-list">${comments.map(c=>`<div class="comment-item"><b>${esc(c.author)}</b>${esc(c.text)}</div>`).join('')||'<small class="muted">ჯერ კომენტარი არ არის.</small>'}</div><div class="comment-compose"><input id="comment-${p.id}" maxlength="500" placeholder="დაწერე კომენტარი..." onkeydown="if(event.key==='Enter'){event.preventDefault();addComment('${p.id}')}"><button class="tiny" onclick="addComment('${p.id}')">გაგზავნა</button></div></div></div></article>`}).join('')||'<p class="muted">ამ კატეგორიაში ჯერ პოსტები არ არის.</p>'}
 function filterPosts(cat){currentFilter=cat;renderPosts();document.getElementById('posts').scrollIntoView({behavior:'smooth'})}
 function goHome(){document.getElementById('home').scrollIntoView({behavior:'smooth'});document.getElementById('duel-live').style.display='none'}
 function openPost(){if(!currentUser){openAuth();toast('პოსტის დასადებად ჯერ შედი ან დარეგისტრირდი.');return;}document.getElementById('postOverlay').classList.remove('hidden')}
@@ -347,6 +347,7 @@ async function endOnlineDuel(){if(!requireDuelSetup()||!activeDuelId)return;if(!
       <div class="post-tools">
         <button class="tiny" onclick="likePost('${esc(p.id)}')">♡ მოწონება</button>
         <button class="tiny" onclick="sharePost('${esc(p.id)}')">↗ გაზიარება</button>
+        ${currentUser && p.user_id === currentUser.id ? `<button class="tiny delete-post-btn" onclick="deletePost('${esc(p.id)}')">🗑 წაშლა</button>` : ''}
       </div>
     `;
 
@@ -729,6 +730,71 @@ renderPosts();
       button.textContent = 'პოსტის გამოქვეყნება';
     }
   }, true);
+
+  // პოსტის წაშლა: მხოლოდ ავტორს შეუძლია; RLS დამატებით ამოწმებს Supabase-ში.
+  window.deletePost = async function(id) {
+    if (!initSupabase() || !currentUser) {
+      openAuth();
+      toast('პოსტის წასაშლელად შედი ანგარიშში.');
+      return;
+    }
+
+    const post = sharedPosts.find(p => String(p.id) === String(id));
+    if (!post) {
+      toast('პოსტი ვერ მოიძებნა.');
+      return;
+    }
+
+    if (String(post.user_id) !== String(currentUser.id)) {
+      toast('მხოლოდ პოსტის ავტორს შეუძლია წაშლა.');
+      return;
+    }
+
+    if (!confirm('ნამდვილად გსურს ამ პოსტის წაშლა? ეს მოქმედება ვერ გაუქმდება.')) return;
+
+    try {
+      const { error } = await supabaseClient
+        .from('posts')
+        .delete()
+        .eq('id', id)
+        .eq('user_id', currentUser.id);
+
+      if (error) throw error;
+
+      // პოსტი უკვე წაიშალა ბაზიდან; ახლა ვცადოთ მის მიერ ატვირთული მედიის წაშლაც.
+      let mediaCleanupFailed = false;
+      if (post.media) {
+        try {
+          const marker = '/storage/v1/object/public/posts/';
+          const url = new URL(post.media);
+          const markerIndex = url.pathname.indexOf(marker);
+
+          if (markerIndex !== -1) {
+            const encodedPath = url.pathname.slice(markerIndex + marker.length);
+            const storagePath = decodeURIComponent(encodedPath);
+            if (storagePath) {
+              const { error: storageError } = await storage().remove([storagePath]);
+              if (storageError) {
+                console.error('პოსტი წაიშალა, მაგრამ მედიის წაშლა ვერ მოხერხდა:', storageError);
+                mediaCleanupFailed = true;
+              }
+            }
+          }
+        } catch (storageError) {
+          console.error('მედიის წაშლა ვერ მოხერხდა:', storageError);
+          mediaCleanupFailed = true;
+        }
+      }
+
+      await loadSharedPosts();
+      if (window.closePostView) window.closePostView();
+      toast(mediaCleanupFailed
+        ? 'პოსტი წაიშალა, მაგრამ ფოტო/ვიდეო Storage-ში დარჩა.'
+        : 'პოსტი წარმატებით წაიშალა!');
+    } catch (error) {
+      notifyError('პოსტის წაშლა ვერ მოხერხდა', error);
+    }
+  };
 
   // საერთო მოწონებები. თითო მომხმარებელი თითო პოსტს ერთხელ იწონებს.
   likePost = async function(id) {
